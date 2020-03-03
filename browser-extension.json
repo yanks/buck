@@ -1,6 +1,6 @@
 {
-  "allowDirectMerges": false,
+  "allowDirectMerges": ["master"],
   "allowBotCommands": false,
-  "internalRepository": "buck",
+  "internalRepository": "fbsource",
   "cannedReplies": {}
 }
