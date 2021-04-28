@@ -65,6 +65,7 @@ import com.facebook.buck.cxx.toolchain.StripStyle;
 import com.facebook.buck.cxx.toolchain.nativelink.NativeLinkableGroup;
 import com.facebook.buck.io.file.MorePaths;
 import com.facebook.buck.io.filesystem.ProjectFilesystem;
+import com.facebook.buck.rules.coercer.FrameworkPath;
 import com.facebook.buck.rules.coercer.PatternMatchedCollection;
 import com.facebook.buck.rules.coercer.SourceSortedSet;
 import com.facebook.buck.rules.macros.StringWithMacros;
@@ -676,7 +677,8 @@ public class AppleDescriptions {
       boolean cacheStrips,
       boolean useEntitlementsWhenAdhocCodeSigning,
       Predicate<BuildTarget> filter,
-      Optional<Boolean> isAppClip) {
+      Optional<Boolean> isAppClip,
+      boolean shouldEmbedXctest) {
     AppleCxxPlatform appleCxxPlatform =
         ApplePlatforms.getAppleCxxPlatformForBuildTarget(
             graphBuilder,
@@ -744,6 +746,16 @@ public class AppleDescriptions {
         frameworksBuilder.add(graphBuilder.requireRule(dep).getSourcePathToOutput());
       }
     }
+
+    if (shouldEmbedXctest) {
+      addXctestLibrariesToFrameworks(
+        frameworksBuilder,
+        appleCxxPlatform.getAppleSdkPaths().getPlatformPath(),
+        projectFilesystem,
+        hasSwiftXCTestDependencies(xcodeDescriptions, targetGraph, binaryTarget, graphBuilder.getSourcePathResolver())
+        );
+    }
+
     ImmutableSet<SourcePath> frameworks = frameworksBuilder.build();
 
     BuildTarget buildTargetWithoutBundleSpecificFlavors = stripBundleSpecificFlavors(buildTarget);
@@ -921,6 +933,74 @@ public class AppleDescriptions {
         useLipoThin,
         useEntitlementsWhenAdhocCodeSigning,
         isAppClip);
+  }
+
+  private static void addXctestLibrariesToFrameworks(
+    ImmutableSet.Builder<SourcePath> frameworksBuilder,
+    Path platformPath,
+    ProjectFilesystem projectFilesystem,
+    boolean hasSwiftXCTestDependencies) {
+    Path xctestPlatformPath = Paths.get("Developer/Library/Frameworks/XCTest.framework");
+    SourcePath xctestFrameworkPath =
+      PathSourcePath.of(projectFilesystem, platformPath.resolve(xctestPlatformPath));
+    frameworksBuilder.add(xctestFrameworkPath);
+
+    if (!hasSwiftXCTestDependencies) {
+      return;
+    }
+
+    Path xctestSwiftSupportPlatformPath =
+      Paths.get("Developer/usr/lib/libXCTestSwiftSupport.dylib");
+    SourcePath xctestSwiftSupportPath =
+      PathSourcePath.of(projectFilesystem, platformPath.resolve(xctestSwiftSupportPlatformPath));
+    frameworksBuilder.add(xctestSwiftSupportPath);
+  }
+
+  private static boolean hasSwiftXCTestDependencies(
+    XCodeDescriptions xcodeDescriptions,
+    TargetGraph targetGraph,
+    BuildTarget binaryTarget,
+    SourcePathResolverAdapter resolver) {
+    Optional<TargetNode<AppleTestDescriptionArg>> testLibraryTargetNode =
+      TargetNodes.castArg(targetGraph.get(binaryTarget), AppleTestDescriptionArg.class);
+    if (!testLibraryTargetNode.isPresent()) {
+      return false;
+    }
+    if (targetNodeContainsSwiftSourceCode(testLibraryTargetNode.get())) {
+      return true;
+    }
+
+    return !AppleBuildRules.collectTransitiveBuildRuleTargetsWithTransform(
+      xcodeDescriptions,
+      targetGraph,
+      Optional.empty(),
+      ImmutableSet.of(AppleLibraryDescription.class),
+      ImmutableList.of(testLibraryTargetNode.get()),
+      RecursiveDependenciesMode.LINKING,
+      input -> input,
+      buildTarget -> {
+        Optional<TargetNode<AppleLibraryDescriptionArg>> depTargetNode =
+          TargetNodes.castArg(
+            targetGraph.get(buildTarget), AppleLibraryDescriptionArg.class);
+        if (!depTargetNode.isPresent()) {
+          return false;
+        }
+        AppleLibraryDescriptionArg arg = depTargetNode.get().getConstructorArg();
+        return dependsOnXCTest(arg, resolver)
+          && targetNodeContainsSwiftSourceCode(depTargetNode.get());
+      })
+      .isEmpty();
+  }
+
+  private static boolean dependsOnXCTest(
+    AppleLibraryDescriptionArg arg, SourcePathResolverAdapter resolver) {
+    for (FrameworkPath path : arg.getFrameworks()) {
+      if (path.getFileName(sourcePath -> resolver.getAbsolutePath(sourcePath))
+        .endsWith("XCTest.framework")) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

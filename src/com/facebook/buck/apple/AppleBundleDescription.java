@@ -223,7 +223,8 @@ public class AppleBundleDescription
         cxxBuckConfig.shouldCacheStrip(),
         appleConfig.useEntitlementsWhenAdhocCodeSigning(),
         resourceFilter,
-        args.getIsAppClip());
+        args.getIsAppClip(),
+        false);
   }
 
   /**

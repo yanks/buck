@@ -83,6 +83,7 @@ import com.facebook.buck.io.BuildCellRelativePath;
 import com.facebook.buck.io.filesystem.ProjectFilesystem;
 import com.facebook.buck.rules.macros.AbsoluteOutputMacroExpander;
 import com.facebook.buck.rules.macros.LocationMacroExpander;
+import com.facebook.buck.rules.macros.StringWithMacros;
 import com.facebook.buck.rules.macros.StringWithMacrosConverter;
 import com.facebook.buck.step.Step;
 import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
@@ -310,13 +311,14 @@ public class AppleTestDescription
             testHostWithTargetApp.flatMap(TestHostInfo::getTestHostAppBinarySourcePath),
             testHostWithTargetApp.map(TestHostInfo::getBlacklist).orElse(ImmutableSet.of()),
             libraryTarget,
-            RichStream.from(args.getTestHostApp()).toImmutableSortedSet(Ordering.natural()));
+            RichStream.from(args.getTestHostApp()).toImmutableSortedSet(Ordering.natural()),
+            appleCxxPlatform);
+    
     if (!createBundle || SwiftLibraryDescription.isSwiftTarget(libraryTarget)) {
       return library;
     }
 
     String platformName = appleCxxPlatform.getAppleSdk().getApplePlatform().getName();
-
     BuildTarget appleBundleBuildTarget =
         buildTarget.withAppendedFlavors(
             BUNDLE_FLAVOR,
@@ -375,7 +377,8 @@ public class AppleTestDescription
                         cxxBuckConfig.shouldCacheStrip(),
                         appleConfig.useEntitlementsWhenAdhocCodeSigning(),
                         Predicates.alwaysTrue(),
-                        Optional.empty())));
+                        Optional.empty(),
+                        appleConfig.getEmbedXctestInTestBundles())));
 
     Optional<SourcePath> xctool =
         getXctool(projectFilesystem, params, targetConfiguration, graphBuilder);
@@ -705,7 +708,8 @@ public class AppleTestDescription
       Optional<SourcePath> testHostAppBinarySourcePath,
       ImmutableSet<BuildTarget> blacklist,
       BuildTarget libraryTarget,
-      ImmutableSortedSet<BuildTarget> extraCxxDeps) {
+      ImmutableSortedSet<BuildTarget> extraCxxDeps,
+      AppleCxxPlatform appleCxxPlatform) {
     BuildTarget existingLibraryTarget =
         libraryTarget
             .withAppendedFlavors(AppleDebuggableBinary.RULE_FLAVOR, CxxStrip.RULE_FLAVOR)
@@ -721,7 +725,7 @@ public class AppleTestDescription
               libraryTarget,
               params,
               graphBuilder,
-              args,
+              appendTestArgs(args, appleCxxPlatform),
               // For now, instead of building all deps as dylibs and fixing up their install_names,
               // we'll just link them statically.
               Optional.of(Linker.LinkableDepType.STATIC),
@@ -732,6 +736,31 @@ public class AppleTestDescription
       graphBuilder.computeIfAbsent(library.getBuildTarget(), ignored -> library);
     }
     return library;
+  }
+
+  private AppleTestDescriptionArg appendTestArgs(
+    AppleTestDescriptionArg args, AppleCxxPlatform appleCxxPlatform) {
+    AppleTestDescriptionArg.Builder builder = AppleTestDescriptionArg.builder().from(args);
+
+    if (appleConfig.getEmbedXctestInTestBundles()) {
+      AppleBundleDestinations destination =
+        AppleBundleDestinations.platformDestinations(
+          appleCxxPlatform.getAppleSdk().getApplePlatform());
+      Path pathToFrameworks =
+        destination.getExecutablesPath().relativize(destination.getFrameworksPath());
+      String linkerArg = "-Wl,-rpath,@executable_path/" + pathToFrameworks.toString();
+      builder.addLinkerFlags(StringWithMacros.ofConstantString(linkerArg));
+    }
+
+    if (swiftBuckConfig.getAddXctestImportPaths()) {
+      // When importing XCTest in Swift, we will need to add the linker search paths to
+      // find libXCTestSupport.dylib and XCTest.framework.
+      builder.addLinkerFlags(
+        StringWithMacros.ofConstantString("-L$PLATFORM_DIR/Developer/usr/lib"),
+        StringWithMacros.ofConstantString("-F$PLATFORM_DIR/Developer/Library/Frameworks"));
+    }
+
+    return builder.build();
   }
 
   @Override

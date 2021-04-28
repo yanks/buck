@@ -468,7 +468,8 @@ public class AppleLibraryDescription
         cxxBuckConfig.shouldCacheStrip(),
         appleConfig.useEntitlementsWhenAdhocCodeSigning(),
         Predicates.alwaysTrue(),
-        Optional.empty());
+        Optional.empty(),
+      false);
   }
 
   /**
